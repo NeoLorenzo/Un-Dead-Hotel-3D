@@ -13,8 +13,8 @@ NavMeshProjectSettings:
     cost: 2
   - name: Room
     cost: 1
-  - name: 
-    cost: 1
+  - name: Furniture
+    cost: 2
   - name: 
     cost: 1
   - name: 
@@ -76,9 +76,9 @@ NavMeshProjectSettings:
     agentRadius: 0.25
     agentHeight: 2
     agentSlope: 45
-    agentClimb: 0.75
-    ledgeDropHeight: 0
-    maxJumpAcrossDistance: 0
+    agentClimb: 0.5
+    ledgeDropHeight: 1
+    maxJumpAcrossDistance: 1
     minRegionArea: 2
     manualCellSize: 0
     cellSize: 0.16666667
