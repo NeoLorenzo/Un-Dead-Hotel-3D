@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.AI;
 using System.Collections;
 using System.Collections.Generic;
+using UnDeadHotel.World;
 
 namespace UnDeadHotel.Actors
 {
@@ -24,12 +25,23 @@ namespace UnDeadHotel.Actors
         public float wanderRadius = 15f;
         public float wanderWaitTime = 2f;
 
+        [Header("Perception")]
+        public float perceptionInterval = 0.2f;
+
         private NavMeshAgent agent;
         private BaseActor targetHuman;
         private float nextAttackTime;
         private bool isWandering;
         private float lostTargetTimer;
         private Vector3 lastKnownPosition;
+        private float nextPerceptionTime;
+        private readonly List<BaseActor> humanCandidates = new List<BaseActor>(16);
+        private bool isRegisteredInSpatialIndex;
+
+        private void OnEnable()
+        {
+            TryRegisterInSpatialIndex();
+        }
 
         protected override void Start()
         {
@@ -40,6 +52,17 @@ namespace UnDeadHotel.Actors
             
             // Default obstacle layer to Layer 6 (Wall) if not set
             if (obstacleLayer == 0) obstacleLayer = 1 << 6;
+            TryRegisterInSpatialIndex();
+        }
+
+        private void OnDisable()
+        {
+            UnregisterFromSpatialIndex();
+        }
+
+        private void OnDestroy()
+        {
+            UnregisterFromSpatialIndex();
         }
 
         private void Update()
@@ -58,7 +81,7 @@ namespace UnDeadHotel.Actors
 
         private void HandleWander()
         {
-            if (!agent.isOnNavMesh) return;
+            if (!IsAgentReady()) return;
             if (!agent.pathPending && agent.remainingDistance < 0.5f && !isWandering)
             {
                 StartCoroutine(WanderRoutine());
@@ -69,6 +92,12 @@ namespace UnDeadHotel.Actors
         {
             isWandering = true;
             yield return new WaitForSeconds(wanderWaitTime);
+
+            if (!IsAgentReady())
+            {
+                isWandering = false;
+                yield break;
+            }
             
             Vector2 randomDir = Random.insideUnitCircle * wanderRadius;
             Vector3 randomTarget = transform.position + new Vector3(randomDir.x, 0, randomDir.y);
@@ -89,20 +118,42 @@ namespace UnDeadHotel.Actors
 
         private void CheckForHumans()
         {
-            BaseActor[] actors = FindObjectsByType<BaseActor>(FindObjectsSortMode.None);
-            
-            foreach (var actor in actors)
+            if (Time.time < nextPerceptionTime) return;
+            nextPerceptionTime = Time.time + Mathf.Max(0.01f, perceptionInterval);
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index == null) return;
+
+            index.QueryHumansInRadius(transform.position, detectionRange, humanCandidates);
+
+            BaseActor closestVisibleHuman = null;
+            float closestDistanceSqr = float.MaxValue;
+            int closestId = int.MaxValue;
+
+            for (int i = 0; i < humanCandidates.Count; i++)
             {
-                if (actor.teamID == 0) // Human
+                BaseActor actor = humanCandidates[i];
+                if (actor == null || actor.teamID != 0 || actor.currentHealth <= 0f) continue;
+
+                if (CanSeeTarget(actor))
                 {
-                    if (CanSeeTarget(actor))
+                    float distSqr = (actor.transform.position - transform.position).sqrMagnitude;
+                    int actorId = actor.GetInstanceID();
+
+                    if (distSqr < closestDistanceSqr || (Mathf.Approximately(distSqr, closestDistanceSqr) && actorId < closestId))
                     {
-                        targetHuman = actor;
-                        currentState = AIState.Chase;
-                        lostTargetTimer = 0f;
-                        return;
+                        closestVisibleHuman = actor;
+                        closestDistanceSqr = distSqr;
+                        closestId = actorId;
                     }
                 }
+            }
+
+            if (closestVisibleHuman != null)
+            {
+                targetHuman = closestVisibleHuman;
+                currentState = AIState.Chase;
+                lostTargetTimer = 0f;
             }
         }
 
@@ -142,6 +193,13 @@ namespace UnDeadHotel.Actors
                 return;
             }
 
+            if (!IsAgentReady())
+            {
+                targetHuman = null;
+                currentState = AIState.Wander;
+                return;
+            }
+
             bool currentlyVisible = CanSeeTarget(targetHuman);
 
             if (currentlyVisible)
@@ -156,12 +214,9 @@ namespace UnDeadHotel.Actors
                 // Persistence: Keep moving toward last known position for a few seconds
                 lostTargetTimer += Time.deltaTime;
                 agent.isStopped = false;
-                
-                if (agent.isOnNavMesh) {
-                    agent.SetDestination(lastKnownPosition);
-                }
+                agent.SetDestination(lastKnownPosition);
 
-                if (lostTargetTimer > chasePersistence || (agent.isOnNavMesh && agent.remainingDistance < 0.5f))
+                if (lostTargetTimer > chasePersistence || agent.remainingDistance < 0.5f)
                 {
                     targetHuman = null;
                     currentState = AIState.Wander;
@@ -224,6 +279,35 @@ namespace UnDeadHotel.Actors
                 nextAttackTime = Time.time + attackCooldown;
                 Debug.Log($"Zombie attacked {targetHuman.gameObject.name}!");
             }
+        }
+
+        private bool IsAgentReady()
+        {
+            return agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh;
+        }
+
+        private void TryRegisterInSpatialIndex()
+        {
+            if (isRegisteredInSpatialIndex) return;
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index == null) return;
+
+            index.RegisterZombie(this);
+            isRegisteredInSpatialIndex = true;
+        }
+
+        private void UnregisterFromSpatialIndex()
+        {
+            if (!isRegisteredInSpatialIndex) return;
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index != null)
+            {
+                index.UnregisterZombie(this);
+            }
+
+            isRegisteredInSpatialIndex = false;
         }
     }
 }

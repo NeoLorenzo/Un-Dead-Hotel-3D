@@ -148,14 +148,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d3a0391eafd2b004c9cd8b929a91b576, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.GameManager
+  perceptionCellSize: 12
+  perceptionRebuildInterval: 0.2
   survivorPrefab: {fileID: 882737984744219268, guid: 026dad7cc33b6f54582c8fa891e265bd, type: 3}
   spawnRadius: 150
   spawnCenter: {x: 176, y: 0, z: 176}
   minSafeDistance: 30
   zombiePrefab: {fileID: 6160975924946950828, guid: c7e3b1443aab46d4cbd8acdf8d762c73, type: 3}
-  initialZombieCount: 50
+  initialZombieCount: 500
   guestPrefab: {fileID: 882737984744219268, guid: 05d5b50a63a6172459a6e0894f6519ec, type: 3}
-  initialGuestCount: 50
+  initialGuestCount: 500
 --- !u!4 &182540230
 Transform:
   m_ObjectHideFlags: 0
@@ -688,10 +690,10 @@ MonoBehaviour:
     m_Bits: 8
   actorLayer:
     serializedVersion: 2
-    m_Bits: 0
+    m_Bits: 128
   selectionMask:
     serializedVersion: 2
-    m_Bits: 0
+    m_Bits: 511
 --- !u!1 &380030235
 GameObject:
   m_ObjectHideFlags: 0

@@ -6,6 +6,10 @@ namespace UnDeadHotel.World
 {
     public class GameManager : MonoBehaviour
     {
+        [Header("AI Spatial Index")]
+        public float perceptionCellSize = 12f;
+        public float perceptionRebuildInterval = 0.2f;
+
         [Header("Prefabs")]
         public GameObject survivorPrefab;
 
@@ -23,6 +27,12 @@ namespace UnDeadHotel.World
         public int initialGuestCount = 5;
 
         private GameObject playerInstance;
+        private ActorSpatialIndex actorSpatialIndex;
+
+        private void Awake()
+        {
+            actorSpatialIndex = ActorSpatialIndex.CreateRuntimeInstance(perceptionCellSize, perceptionRebuildInterval);
+        }
 
         private void Start()
         {
@@ -32,6 +42,19 @@ namespace UnDeadHotel.World
 
             // Spawn Behavior Tree Debug UI
             new GameObject("BehaviorTreeUI_Manager").AddComponent<UnDeadHotel.UI.BehaviorTreeUI>();
+        }
+
+        private void Update()
+        {
+            actorSpatialIndex?.Tick(Time.time);
+        }
+
+        private void OnDestroy()
+        {
+            if (ActorSpatialIndex.Instance == actorSpatialIndex)
+            {
+                ActorSpatialIndex.ClearRuntimeInstance();
+            }
         }
 
         public void SpawnPlayer()
@@ -71,25 +94,33 @@ namespace UnDeadHotel.World
         {
             if (zombiePrefab == null) return;
 
+            int spawnedCount = 0;
             for (int i = 0; i < count; i++)
             {
                 Vector3 spawnPos = GetRandomNavMeshPoint(true);
-                Instantiate(zombiePrefab, spawnPos, Quaternion.identity);
+                if (InstantiateAgentOnNavMesh(zombiePrefab, spawnPos) != null)
+                {
+                    spawnedCount++;
+                }
             }
-            Debug.Log($"Spawned {count} zombies.");
+            Debug.Log($"Spawned {spawnedCount}/{count} zombies.");
         }
 
         public void SpawnGuests(int count)
         {
             if (guestPrefab == null) return;
 
+            int spawnedCount = 0;
             for (int i = 0; i < count; i++)
             {
                 // Try to spawn guests in rooms initially if possible, or anywhere safe
                 Vector3 spawnPos = GetRandomNavMeshPoint(true);
-                Instantiate(guestPrefab, spawnPos, Quaternion.identity);
+                if (InstantiateAgentOnNavMesh(guestPrefab, spawnPos) != null)
+                {
+                    spawnedCount++;
+                }
             }
-            Debug.Log($"Spawned {count} guests.");
+            Debug.Log($"Spawned {spawnedCount}/{count} guests.");
         }
 
         private Vector3 GetRandomNavMeshPoint(bool checkSafeDist = false)
@@ -109,7 +140,47 @@ namespace UnDeadHotel.World
                     return hit.position;
                 }
             }
-            return spawnCenter; // Fallback
+
+            if (NavMesh.SamplePosition(spawnCenter, out NavMeshHit fallbackHit, 30f, NavMesh.AllAreas))
+            {
+                return fallbackHit.position;
+            }
+
+            return spawnCenter; // Hard fallback if no NavMesh nearby
+        }
+
+        private GameObject InstantiateAgentOnNavMesh(GameObject prefab, Vector3 spawnPos)
+        {
+            GameObject instance = Instantiate(prefab, spawnPos, Quaternion.identity);
+            if (instance == null) return null;
+
+            NavMeshAgent agent = instance.GetComponent<NavMeshAgent>();
+            if (agent == null)
+            {
+                return instance;
+            }
+
+            if (agent.isOnNavMesh)
+            {
+                return instance;
+            }
+
+            if (NavMesh.SamplePosition(spawnPos, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            {
+                if (!agent.Warp(hit.position))
+                {
+                    instance.transform.position = hit.position;
+                }
+
+                if (agent.isOnNavMesh)
+                {
+                    return instance;
+                }
+            }
+
+            Debug.LogWarning($"Failed to place '{prefab.name}' on NavMesh near {spawnPos}. Destroying instance.");
+            Destroy(instance);
+            return null;
         }
     }
 }

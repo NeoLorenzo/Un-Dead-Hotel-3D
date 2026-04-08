@@ -3,6 +3,7 @@ using UnityEngine;
 using UnityEngine.AI;
 using UnDeadHotel.Actors;
 using UnDeadHotel.AI;
+using UnDeadHotel.World;
 
 namespace UnDeadHotel.Actors
 {
@@ -15,6 +16,7 @@ namespace UnDeadHotel.Actors
         public float hearingRadius = 2.0f;
         public LayerMask obstacleLayer;
         public float panicPersistence = 4.0f;
+        public float dangerScanInterval = 0.2f;
 
         [Header("Wander Settings")]
         public float wanderRadius = 10f;
@@ -31,6 +33,15 @@ namespace UnDeadHotel.Actors
         private float wanderTimer;
         private float nextWanderTime;
         private Vector3 currentShelterTarget;
+        private bool isRegisteredInSpatialIndex;
+        private float nextDangerScanTime;
+        private bool hasVisibleThreatThisScan;
+        private readonly List<BaseActor> nearbyZombies = new List<BaseActor>(16);
+
+        private void OnEnable()
+        {
+            TryRegisterInSpatialIndex();
+        }
 
         protected override void Start()
         {
@@ -43,6 +54,17 @@ namespace UnDeadHotel.Actors
 
             // Build the Behavior Tree
             BuildBehaviorTree();
+            TryRegisterInSpatialIndex();
+        }
+
+        private void OnDisable()
+        {
+            UnregisterFromSpatialIndex();
+        }
+
+        private void OnDestroy()
+        {
+            UnregisterFromSpatialIndex();
         }
 
         private void BuildBehaviorTree()
@@ -93,43 +115,27 @@ namespace UnDeadHotel.Actors
 
         private NodeState CheckForDanger()
         {
-            Collider[] hits = Physics.OverlapSphere(transform.position, dangerDetectionRadius);
-            bool threatVisible = false;
-
-            foreach (var hit in hits)
+            if (Time.time >= nextDangerScanTime)
             {
-                if (hit.gameObject != this.gameObject)
-                {
-                    BaseActor actor = hit.GetComponent<BaseActor>();
-                    if (actor != null && actor.teamID == 1) // 1 == Zombie
-                    {
-                        if (CanSeeTarget(actor))
-                        {
-                            currentThreat = actor;
-                            lastKnownThreatPosition = actor.transform.position;
-                            panicTimer = 0f;
-                            threatVisible = true;
-                            // Found a visible threat, we can break out of loop
-                            break;
-                        }
-                    }
-                }
+                PerformDangerScan();
+                nextDangerScanTime = Time.time + Mathf.Max(0.01f, dangerScanInterval);
             }
 
-            if (!threatVisible)
+            if (hasVisibleThreatThisScan && currentThreat != null && currentThreat.currentHealth > 0f)
             {
-                currentThreat = null;
-                panicTimer += Time.deltaTime;
-
-                // Continue to panic if a threat was recently lost
-                if (panicTimer < panicPersistence)
-                {
-                    return NodeState.Success;
-                }
-                return NodeState.Failure;
+                panicTimer = 0f;
+                return NodeState.Success;
             }
 
-            return NodeState.Success;
+            currentThreat = null;
+            panicTimer += Time.deltaTime;
+
+            // Continue to panic if a threat was recently lost
+            if (panicTimer < panicPersistence)
+            {
+                return NodeState.Success;
+            }
+            return NodeState.Failure;
         }
 
         private bool CanSeeTarget(BaseActor target)
@@ -326,6 +332,72 @@ namespace UnDeadHotel.Actors
             // Draw Hearing Radius
             Gizmos.color = Color.cyan;
             Gizmos.DrawWireSphere(transform.position, hearingRadius);
+        }
+
+        private void TryRegisterInSpatialIndex()
+        {
+            if (isRegisteredInSpatialIndex) return;
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index == null) return;
+
+            index.RegisterHuman(this);
+            isRegisteredInSpatialIndex = true;
+        }
+
+        private void UnregisterFromSpatialIndex()
+        {
+            if (!isRegisteredInSpatialIndex) return;
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index != null)
+            {
+                index.UnregisterHuman(this);
+            }
+
+            isRegisteredInSpatialIndex = false;
+        }
+
+        private void PerformDangerScan()
+        {
+            hasVisibleThreatThisScan = false;
+
+            ActorSpatialIndex index = ActorSpatialIndex.Instance;
+            if (index == null)
+            {
+                return;
+            }
+
+            index.QueryZombiesInRadius(transform.position, dangerDetectionRadius, nearbyZombies);
+
+            BaseActor closestVisibleThreat = null;
+            float closestDistanceSqr = float.MaxValue;
+            int closestId = int.MaxValue;
+
+            for (int i = 0; i < nearbyZombies.Count; i++)
+            {
+                BaseActor actor = nearbyZombies[i];
+                if (actor == null || actor.teamID != 1 || actor.currentHealth <= 0f) continue;
+
+                if (!CanSeeTarget(actor)) continue;
+
+                float distSqr = (actor.transform.position - transform.position).sqrMagnitude;
+                int actorId = actor.GetInstanceID();
+
+                if (distSqr < closestDistanceSqr || (Mathf.Approximately(distSqr, closestDistanceSqr) && actorId < closestId))
+                {
+                    closestVisibleThreat = actor;
+                    closestDistanceSqr = distSqr;
+                    closestId = actorId;
+                }
+            }
+
+            if (closestVisibleThreat != null)
+            {
+                currentThreat = closestVisibleThreat;
+                lastKnownThreatPosition = closestVisibleThreat.transform.position;
+                hasVisibleThreatThisScan = true;
+            }
         }
     }
 }
