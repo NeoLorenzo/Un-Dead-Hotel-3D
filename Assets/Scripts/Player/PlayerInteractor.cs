@@ -13,6 +13,7 @@ namespace UnDeadHotel.Player
         [Header("Settings")]
         public LayerMask floorLayer;
         public LayerMask actorLayer;
+        public LayerMask selectionMask;
 
         private Camera mainCamera;
         private CameraController cameraController;
@@ -45,7 +46,7 @@ namespace UnDeadHotel.Player
         private void HandleSelectCommand()
         {
             Ray ray = mainCamera.ScreenPointToRay(mouse.position.ReadValue());
-            RaycastHit[] hits = Physics.RaycastAll(ray, 1000f);
+            RaycastHit[] hits = Physics.RaycastAll(ray, 1000f, selectionMask);
             foreach (var hit in hits)
             {
                 var guest = hit.collider.GetComponentInParent<UnDeadHotel.Actors.GuestController>();
