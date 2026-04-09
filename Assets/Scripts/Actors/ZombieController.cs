@@ -275,7 +275,7 @@ namespace UnDeadHotel.Actors
         {
             if (targetHuman != null)
             {
-                targetHuman.TakeDamage(damageAmount);
+                targetHuman.TakeDamage(damageAmount, teamID);
                 nextAttackTime = Time.time + attackCooldown;
                 Debug.Log($"Zombie attacked {targetHuman.gameObject.name}!");
             }

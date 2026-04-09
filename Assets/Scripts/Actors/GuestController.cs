@@ -17,11 +17,13 @@ namespace UnDeadHotel.Actors
         public LayerMask obstacleLayer;
         public float panicPersistence = 4.0f;
         public float dangerScanInterval = 0.2f;
+        public float outsideRoomComfortDuration = 10.0f;
 
         [Header("Wander Settings")]
         public float wanderRadius = 10f;
         public float minWanderWaitTime = 0.5f;
         public float maxWanderWaitTime = 2.0f;
+        public int wanderCandidateSamples = 8;
 
         private NavMeshAgent agent;
         private Selector rootNode;
@@ -30,6 +32,7 @@ namespace UnDeadHotel.Actors
         private BaseActor currentThreat;
         private Vector3 lastKnownThreatPosition;
         private float panicTimer = 999f;
+        private float outsideRoomComfortTimer;
         private float wanderTimer;
         private float nextWanderTime;
         private Vector3 currentShelterTarget;
@@ -37,6 +40,8 @@ namespace UnDeadHotel.Actors
         private float nextDangerScanTime;
         private bool hasVisibleThreatThisScan;
         private readonly List<BaseActor> nearbyZombies = new List<BaseActor>(16);
+        private bool hasProcessedDeath;
+        private NavMeshPath wanderPath;
 
         private void OnEnable()
         {
@@ -49,6 +54,8 @@ namespace UnDeadHotel.Actors
             agent = GetComponent<NavMeshAgent>();
             agent.speed = moveSpeed;
             teamID = 0; // Human
+            outsideRoomComfortTimer = Mathf.Max(0f, outsideRoomComfortDuration);
+            wanderPath = new NavMeshPath();
 
             if (obstacleLayer == 0) obstacleLayer = 1 << 6; // Default to Wall if unset
 
@@ -196,6 +203,8 @@ namespace UnDeadHotel.Actors
                 int mask = hit.mask;
                 if ((mask & (1 << 3)) != 0) 
                 {
+                    outsideRoomComfortTimer = Mathf.Max(0f, outsideRoomComfortDuration);
+
                     // If we have an active destination placed deep inside the room, keep going until we reach it!
                     if (currentShelterTarget != Vector3.zero)
                     {
@@ -209,7 +218,14 @@ namespace UnDeadHotel.Actors
                 }
             }
 
-            return NodeState.Success; // We need shelter
+            // Not in room: countdown comfort timer before deciding to seek shelter.
+            if (outsideRoomComfortTimer > 0f)
+            {
+                outsideRoomComfortTimer = Mathf.Max(0f, outsideRoomComfortTimer - Time.deltaTime);
+                return NodeState.Failure;
+            }
+
+            return NodeState.Success; // Comfort timer expired, we now seek shelter.
         }
 
         private NodeState ActionSeekShelter()
@@ -266,7 +282,7 @@ namespace UnDeadHotel.Actors
 
         private NodeState ActionWander()
         {
-            if (!agent.isOnNavMesh) return NodeState.Running;
+            if (!IsAgentReady()) return NodeState.Running;
 
             agent.speed = moveSpeed * 0.7f; // Walk casually
 
@@ -279,7 +295,7 @@ namespace UnDeadHotel.Actors
                 {
                     float actualWanderRadius = wanderRadius;
                     int maskToUse = NavMesh.AllAreas;
-                    
+                     
                     // If we are currently inside a room, only wander INSIDE rooms, and keep pacing very tight!
                     NavMeshHit roomCheck;
                     if (NavMesh.SamplePosition(transform.position, out roomCheck, 2.0f, NavMesh.AllAreas))
@@ -291,20 +307,64 @@ namespace UnDeadHotel.Actors
                         }
                     }
 
-                    Vector2 randomDir = Random.insideUnitCircle * actualWanderRadius;
-                    Vector3 randomTarget = transform.position + new Vector3(randomDir.x, 0, randomDir.y);
+                    Vector3 bestTarget = transform.position;
+                    float bestScore = float.MaxValue;
+                    bool foundValidTarget = false;
+                    int sampleCount = Mathf.Max(1, wanderCandidateSamples);
+                    Vector3 fallbackTarget = transform.position;
+                    bool hasFallbackTarget = false;
 
-                    NavMeshHit hit;
-                    // Raycast along the NavMesh to ensure there's no wall between us and the target
-                    if (NavMesh.Raycast(transform.position, randomTarget, out hit, maskToUse))
+                    // Sample multiple NavMesh-valid points and choose the cheapest reachable one.
+                    for (int i = 0; i < sampleCount; i++)
                     {
-                        // Hit a wall! Snap the destination securely to the edge of the wall where the ray hit.
-                        agent.SetDestination(hit.position);
+                        Vector2 randomDir = Random.insideUnitCircle * actualWanderRadius;
+                        Vector3 candidate = transform.position + new Vector3(randomDir.x, 0f, randomDir.y);
+
+                        NavMeshHit candidateHit;
+                        if (!NavMesh.SamplePosition(candidate, out candidateHit, 2.0f, maskToUse))
+                        {
+                            continue;
+                        }
+
+                        // Keep at least one sampled fallback so we still move even if path scoring fails.
+                        if (!hasFallbackTarget)
+                        {
+                            fallbackTarget = candidateHit.position;
+                            hasFallbackTarget = true;
+                        }
+
+                        if (wanderPath == null)
+                        {
+                            wanderPath = new NavMeshPath();
+                        }
+
+                        if (!agent.CalculatePath(candidateHit.position, wanderPath) || wanderPath.status != NavMeshPathStatus.PathComplete)
+                        {
+                            continue;
+                        }
+
+                        float pathLength = 0f;
+                        Vector3[] corners = wanderPath.corners;
+                        for (int c = 1; c < corners.Length; c++)
+                        {
+                            pathLength += Vector3.Distance(corners[c - 1], corners[c]);
+                        }
+
+                        if (pathLength < bestScore)
+                        {
+                            bestScore = pathLength;
+                            bestTarget = candidateHit.position;
+                            foundValidTarget = true;
+                        }
                     }
-                    else
+
+                    if (foundValidTarget)
                     {
-                        // Clear path, use target
-                        agent.SetDestination(randomTarget);
+                        agent.SetDestination(bestTarget);
+                    }
+                    else if (hasFallbackTarget)
+                    {
+                        agent.SetDestination(fallbackTarget);
                     }
 
                     wanderTimer = 0f;
@@ -318,6 +378,16 @@ namespace UnDeadHotel.Actors
             }
 
             return NodeState.Running;
+        }
+
+        private bool IsAgentReady()
+        {
+            return agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh;
+        }
+
+        public float GetOutsideRoomComfortTimeRemaining()
+        {
+            return Mathf.Max(0f, outsideRoomComfortTimer);
         }
 
         private void OnDrawGizmosSelected()
@@ -398,6 +468,22 @@ namespace UnDeadHotel.Actors
                 lastKnownThreatPosition = closestVisibleThreat.transform.position;
                 hasVisibleThreatThisScan = true;
             }
+        }
+
+        protected override void Die()
+        {
+            if (!hasProcessedDeath)
+            {
+                hasProcessedDeath = true;
+
+                bool killedByZombie = lastDamageSourceTeamID == 1;
+                if (killedByZombie && GameManager.Instance != null)
+                {
+                    GameManager.Instance.TryConvertGuestToZombie(transform.position, transform.rotation);
+                }
+            }
+
+            base.Die();
         }
     }
 }

@@ -1,11 +1,14 @@
 using UnityEngine;
 using UnityEngine.AI;
 using UnDeadHotel.Player;
+using System.Collections.Generic;
 
 namespace UnDeadHotel.World
 {
     public class GameManager : MonoBehaviour
     {
+        public static GameManager Instance { get; private set; }
+
         [Header("AI Spatial Index")]
         public float perceptionCellSize = 12f;
         public float perceptionRebuildInterval = 0.2f;
@@ -18,27 +21,33 @@ namespace UnDeadHotel.World
         public Vector3 spawnCenter = new Vector3(176f, 0f, 176f);
         public float minSafeDistance = 30f;
 
-        [Header("Zombies")]
+        [Header("Population")]
         public GameObject zombiePrefab;
-        public int initialZombieCount = 10;
-
-        [Header("Guests")]
         public GameObject guestPrefab;
-        public int initialGuestCount = 5;
+        [Range(0f, 1f)] public float guestOccupancyRate = 0.6f;
+        [Range(0f, 1f)] public float initialZombificationRate = 0.1f;
+        public bool logPopulationSummary = true;
+        public bool logConversions = false;
 
         private GameObject playerInstance;
         private ActorSpatialIndex actorSpatialIndex;
+        private int conversionCount;
+        private readonly List<Transform> roomSpawnPoints = new List<Transform>(256);
 
         private void Awake()
         {
+            if (Instance != null && Instance != this)
+            {
+                Debug.LogWarning("Multiple GameManager instances found. Replacing previous instance.");
+            }
+            Instance = this;
             actorSpatialIndex = ActorSpatialIndex.CreateRuntimeInstance(perceptionCellSize, perceptionRebuildInterval);
         }
 
         private void Start()
         {
             SpawnPlayer();
-            SpawnZombies(initialZombieCount);
-            SpawnGuests(initialGuestCount);
+            InitializePopulationFromSpawnPoints();
 
             // Spawn Behavior Tree Debug UI
             new GameObject("BehaviorTreeUI_Manager").AddComponent<UnDeadHotel.UI.BehaviorTreeUI>();
@@ -54,6 +63,11 @@ namespace UnDeadHotel.World
             if (ActorSpatialIndex.Instance == actorSpatialIndex)
             {
                 ActorSpatialIndex.ClearRuntimeInstance();
+            }
+
+            if (Instance == this)
+            {
+                Instance = null;
             }
         }
 
@@ -123,6 +137,75 @@ namespace UnDeadHotel.World
             Debug.Log($"Spawned {spawnedCount}/{count} guests.");
         }
 
+        private void InitializePopulationFromSpawnPoints()
+        {
+            if (guestPrefab == null || zombiePrefab == null)
+            {
+                Debug.LogWarning("Population initialization skipped: guest or zombie prefab is not assigned.");
+                return;
+            }
+
+            roomSpawnPoints.Clear();
+            DiscoverRoomSpawnPoints(roomSpawnPoints);
+
+            int occupiedCount = 0;
+            int spawnedGuests = 0;
+            int spawnedZombies = 0;
+
+            for (int i = 0; i < roomSpawnPoints.Count; i++)
+            {
+                Transform spawnPoint = roomSpawnPoints[i];
+                if (spawnPoint == null) continue;
+                if (Random.value > guestOccupancyRate) continue;
+
+                occupiedCount++;
+
+                bool startsAsZombie = Random.value < initialZombificationRate;
+                GameObject prefab = startsAsZombie ? zombiePrefab : guestPrefab;
+
+                if (InstantiateAgentOnNavMesh(prefab, spawnPoint.position, spawnPoint.rotation) != null)
+                {
+                    if (startsAsZombie) spawnedZombies++;
+                    else spawnedGuests++;
+                }
+            }
+
+            if (logPopulationSummary)
+            {
+                Debug.Log($"Population init: totalSpawnPoints={roomSpawnPoints.Count}, occupied={occupiedCount}, guests={spawnedGuests}, zombies={spawnedZombies}");
+            }
+        }
+
+        private void DiscoverRoomSpawnPoints(List<Transform> buffer)
+        {
+            Transform[] allTransforms = FindObjectsByType<Transform>(FindObjectsSortMode.None);
+            for (int i = 0; i < allTransforms.Length; i++)
+            {
+                Transform t = allTransforms[i];
+                if (t == null || !t.gameObject.activeInHierarchy) continue;
+                if (t.name.StartsWith("SP_Guest_"))
+                {
+                    buffer.Add(t);
+                }
+            }
+        }
+
+        public bool TryConvertGuestToZombie(Vector3 position, Quaternion rotation)
+        {
+            if (zombiePrefab == null) return false;
+
+            GameObject spawned = InstantiateAgentOnNavMesh(zombiePrefab, position, rotation);
+            if (spawned == null) return false;
+
+            conversionCount++;
+            if (logConversions)
+            {
+                Debug.Log($"Guest converted to zombie. Total conversions: {conversionCount}");
+            }
+
+            return true;
+        }
+
         private Vector3 GetRandomNavMeshPoint(bool checkSafeDist = false)
         {
             for (int i = 0; i < 50; i++)
@@ -149,9 +232,10 @@ namespace UnDeadHotel.World
             return spawnCenter; // Hard fallback if no NavMesh nearby
         }
 
-        private GameObject InstantiateAgentOnNavMesh(GameObject prefab, Vector3 spawnPos)
+        private GameObject InstantiateAgentOnNavMesh(GameObject prefab, Vector3 spawnPos, Quaternion? spawnRotation = null)
         {
-            GameObject instance = Instantiate(prefab, spawnPos, Quaternion.identity);
+            Quaternion rotation = spawnRotation ?? Quaternion.identity;
+            GameObject instance = Instantiate(prefab, spawnPos, rotation);
             if (instance == null) return null;
 
             NavMeshAgent agent = instance.GetComponent<NavMeshAgent>();

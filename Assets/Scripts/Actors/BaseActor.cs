@@ -5,6 +5,8 @@ namespace UnDeadHotel.Actors
 {
     public class BaseActor : MonoBehaviour
     {
+        public const int UnknownTeamId = -1;
+
         [Header("Common Stats")]
         public float maxHealth = 100f;
         public float currentHealth;
@@ -24,18 +26,26 @@ namespace UnDeadHotel.Actors
         private Canvas healthCanvas;
         private Image healthFillImage;
         private bool healthBarInitialized = false;
+        protected int lastDamageSourceTeamID = UnknownTeamId;
 
         protected virtual void Start()
         {
             currentHealth = maxHealth;
+            lastDamageSourceTeamID = UnknownTeamId;
             actorRenderer = GetComponent<Renderer>();
             if (actorRenderer != null) originalColor = actorRenderer.material.color;
         }
 
         public virtual void TakeDamage(float amount)
         {
+            TakeDamage(amount, UnknownTeamId);
+        }
+
+        public virtual void TakeDamage(float amount, int sourceTeamID)
+        {
             if (!healthBarInitialized) InitializeHealthBar();
-            
+
+            lastDamageSourceTeamID = sourceTeamID;
             currentHealth -= amount;
             UpdateHealthBar();
             
