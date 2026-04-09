@@ -139,7 +139,7 @@ namespace UnDeadHotel.UI
 
             if (headerText != null)
             {
-                headerText.text = $"GUEST BEHAVIOR  •  {selectedGuest.gameObject.name.ToUpperInvariant()}";
+                headerText.text = $"GUEST BEHAVIOR  -  {selectedGuest.gameObject.name.ToUpperInvariant()}";
             }
 
             // Fetch the updated tree state every frame
@@ -159,3 +159,4 @@ namespace UnDeadHotel.UI
         }
     }
 }
+

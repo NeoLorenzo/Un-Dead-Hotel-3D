@@ -2,24 +2,45 @@ using UnityEngine;
 using UnityEngine.AI;
 using UnDeadHotel.Player;
 using System.Collections.Generic;
+using UnityEngine.Rendering;
 
 namespace UnDeadHotel.World
 {
     public class GameManager : MonoBehaviour
     {
+        private const float SecondsPerDay = 86400f;
+
         public static GameManager Instance { get; private set; }
 
         [Header("AI Spatial Index")]
         public float perceptionCellSize = 12f;
         public float perceptionRebuildInterval = 0.2f;
 
+        [Header("Time")]
+        [Range(0f, 24f)] public float startHour = 8f;
+        public float gameSecondsPerRealSecond = 3600f;
+        public bool pauseTime = false;
+
+        [Header("Day/Night Visuals")]
+        public Light sunLight;
+        public float sunYaw = 170f;
+        public float sunPitchOffset = -90f;
+        public AnimationCurve sunIntensityByTime = new AnimationCurve(
+            new Keyframe(0.00f, 0.00f),
+            new Keyframe(0.20f, 0.10f),
+            new Keyframe(0.25f, 0.90f),
+            new Keyframe(0.50f, 1.10f),
+            new Keyframe(0.75f, 0.90f),
+            new Keyframe(0.80f, 0.10f),
+            new Keyframe(1.00f, 0.00f)
+        );
+        public Gradient sunColorByTime;
+        public Gradient ambientSkyColorByTime;
+        public Gradient ambientEquatorColorByTime;
+        public Gradient ambientGroundColorByTime;
+
         [Header("Prefabs")]
         public GameObject survivorPrefab;
-
-        [Header("Spawning")]
-        public float spawnRadius = 150f;
-        public Vector3 spawnCenter = new Vector3(176f, 0f, 176f);
-        public float minSafeDistance = 30f;
 
         [Header("Population")]
         public GameObject zombiePrefab;
@@ -33,6 +54,22 @@ namespace UnDeadHotel.World
         private ActorSpatialIndex actorSpatialIndex;
         private int conversionCount;
         private readonly List<Transform> roomSpawnPoints = new List<Transform>(256);
+        private Transform reservedPlayerSpawnPoint;
+        private Transform reservedPlayerRoomRoot;
+        private float currentTimeSeconds;
+
+        public float CurrentTimeHours => currentTimeSeconds / 3600f;
+        public float CurrentTimeSeconds => currentTimeSeconds;
+        public string CurrentTimeFormatted
+        {
+            get
+            {
+                int totalMinutes = Mathf.FloorToInt(currentTimeSeconds / 60f) % 1440;
+                int hour = totalMinutes / 60;
+                int minute = totalMinutes % 60;
+                return $"{hour:00}:{minute:00}";
+            }
+        }
 
         private void Awake()
         {
@@ -42,6 +79,11 @@ namespace UnDeadHotel.World
             }
             Instance = this;
             actorSpatialIndex = ActorSpatialIndex.CreateRuntimeInstance(perceptionCellSize, perceptionRebuildInterval);
+            currentTimeSeconds = Mathf.Repeat(startHour * 3600f, SecondsPerDay);
+
+            EnsureDefaultGradients();
+            ResolveSunLightIfNeeded();
+            ApplyDayNightVisuals();
         }
 
         private void Start()
@@ -51,11 +93,17 @@ namespace UnDeadHotel.World
 
             // Spawn Behavior Tree Debug UI
             new GameObject("BehaviorTreeUI_Manager").AddComponent<UnDeadHotel.UI.BehaviorTreeUI>();
+            if (FindAnyObjectByType<UnDeadHotel.UI.TimeOfDayUI>() == null)
+            {
+                new GameObject("TimeOfDayUI_Manager").AddComponent<UnDeadHotel.UI.TimeOfDayUI>();
+            }
         }
 
         private void Update()
         {
             actorSpatialIndex?.Tick(Time.time);
+            UpdateInGameTime();
+            ApplyDayNightVisuals();
         }
 
         private void OnDestroy()
@@ -79,8 +127,34 @@ namespace UnDeadHotel.World
                 return;
             }
 
-            Vector3 randomPos = GetRandomNavMeshPoint();
-            playerInstance = Instantiate(survivorPrefab, randomPos, Quaternion.identity);
+            roomSpawnPoints.Clear();
+            DiscoverRoomSpawnPoints(roomSpawnPoints);
+
+            if (roomSpawnPoints.Count == 0)
+            {
+                Debug.LogError("No active room spawn points found (expected transforms named 'SP_Guest_*'). Survivor will not spawn.");
+                return;
+            }
+
+            int randomIndex = Random.Range(0, roomSpawnPoints.Count);
+            Transform selectedSpawnPoint = roomSpawnPoints[randomIndex];
+            if (selectedSpawnPoint == null)
+            {
+                Debug.LogError("Selected room spawn point is null. Survivor will not spawn.");
+                return;
+            }
+
+            reservedPlayerSpawnPoint = selectedSpawnPoint;
+            reservedPlayerRoomRoot = GetRoomRoot(selectedSpawnPoint);
+
+            Vector3 spawnPos = selectedSpawnPoint.position;
+            Quaternion spawnRotation = selectedSpawnPoint.rotation;
+            if (NavMesh.SamplePosition(spawnPos, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            {
+                spawnPos = hit.position;
+            }
+
+            playerInstance = Instantiate(survivorPrefab, spawnPos, spawnRotation);
             playerInstance.name = "Player_Survivor_Dynamic";
 
             // Link to interactor
@@ -93,48 +167,15 @@ namespace UnDeadHotel.World
                 var camCtrl = Camera.main.GetComponent<CameraController>();
                 if (camCtrl != null)
                 {
-                    camCtrl.SetPosition(randomPos);
+                    camCtrl.SetPosition(spawnPos);
                 }
                 else
                 {
-                    Camera.main.transform.position = new Vector3(randomPos.x, 50f, randomPos.z);
+                    Camera.main.transform.position = new Vector3(spawnPos.x, 50f, spawnPos.z);
                 }
             }
             
-            Debug.Log($"Survivor spawned at {randomPos}");
-        }
-
-        public void SpawnZombies(int count)
-        {
-            if (zombiePrefab == null) return;
-
-            int spawnedCount = 0;
-            for (int i = 0; i < count; i++)
-            {
-                Vector3 spawnPos = GetRandomNavMeshPoint(true);
-                if (InstantiateAgentOnNavMesh(zombiePrefab, spawnPos) != null)
-                {
-                    spawnedCount++;
-                }
-            }
-            Debug.Log($"Spawned {spawnedCount}/{count} zombies.");
-        }
-
-        public void SpawnGuests(int count)
-        {
-            if (guestPrefab == null) return;
-
-            int spawnedCount = 0;
-            for (int i = 0; i < count; i++)
-            {
-                // Try to spawn guests in rooms initially if possible, or anywhere safe
-                Vector3 spawnPos = GetRandomNavMeshPoint(true);
-                if (InstantiateAgentOnNavMesh(guestPrefab, spawnPos) != null)
-                {
-                    spawnedCount++;
-                }
-            }
-            Debug.Log($"Spawned {spawnedCount}/{count} guests.");
+            Debug.Log($"Survivor spawned at {spawnPos}");
         }
 
         private void InitializePopulationFromSpawnPoints()
@@ -156,6 +197,7 @@ namespace UnDeadHotel.World
             {
                 Transform spawnPoint = roomSpawnPoints[i];
                 if (spawnPoint == null) continue;
+                if (IsReservedForPlayerRoom(spawnPoint)) continue;
                 if (Random.value > guestOccupancyRate) continue;
 
                 occupiedCount++;
@@ -190,6 +232,20 @@ namespace UnDeadHotel.World
             }
         }
 
+        private Transform GetRoomRoot(Transform spawnPoint)
+        {
+            if (spawnPoint == null) return null;
+            return spawnPoint.parent != null ? spawnPoint.parent : spawnPoint;
+        }
+
+        private bool IsReservedForPlayerRoom(Transform spawnPoint)
+        {
+            if (spawnPoint == null) return false;
+            if (reservedPlayerSpawnPoint != null && spawnPoint == reservedPlayerSpawnPoint) return true;
+            if (reservedPlayerRoomRoot == null) return false;
+            return GetRoomRoot(spawnPoint) == reservedPlayerRoomRoot;
+        }
+
         public bool TryConvertGuestToZombie(Vector3 position, Quaternion rotation)
         {
             if (zombiePrefab == null) return false;
@@ -206,30 +262,161 @@ namespace UnDeadHotel.World
             return true;
         }
 
-        private Vector3 GetRandomNavMeshPoint(bool checkSafeDist = false)
+        private void UpdateInGameTime()
         {
-            for (int i = 0; i < 50; i++)
+            if (!pauseTime)
             {
-                Vector3 randomDir = Random.insideUnitSphere * spawnRadius;
-                randomDir += spawnCenter;
-                NavMeshHit hit;
-                if (NavMesh.SamplePosition(randomDir, out hit, 15f, NavMesh.AllAreas))
+                float deltaGameSeconds = Time.deltaTime * Mathf.Max(0f, gameSecondsPerRealSecond);
+                currentTimeSeconds = Mathf.Repeat(currentTimeSeconds + deltaGameSeconds, SecondsPerDay);
+            }
+        }
+
+        private void ApplyDayNightVisuals()
+        {
+            ResolveSunLightIfNeeded();
+            float time01 = currentTimeSeconds / SecondsPerDay;
+
+            if (sunLight != null)
+            {
+                float pitch = time01 * 360f + sunPitchOffset;
+                sunLight.transform.rotation = Quaternion.Euler(pitch, sunYaw, 0f);
+                sunLight.intensity = Mathf.Max(0f, sunIntensityByTime.Evaluate(time01));
+                sunLight.color = sunColorByTime.Evaluate(time01);
+                RenderSettings.sun = sunLight;
+            }
+
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = ambientSkyColorByTime.Evaluate(time01);
+            RenderSettings.ambientEquatorColor = ambientEquatorColorByTime.Evaluate(time01);
+            RenderSettings.ambientGroundColor = ambientGroundColorByTime.Evaluate(time01);
+        }
+
+        private void ResolveSunLightIfNeeded()
+        {
+            if (sunLight != null) return;
+
+            if (RenderSettings.sun != null)
+            {
+                sunLight = RenderSettings.sun;
+                return;
+            }
+
+            GameObject directionalByName = GameObject.Find("Directional Light");
+            if (directionalByName != null)
+            {
+                Light namedLight = directionalByName.GetComponent<Light>();
+                if (namedLight != null && namedLight.type == LightType.Directional)
                 {
-                    if (checkSafeDist && playerInstance != null)
-                    {
-                        if (Vector3.Distance(hit.position, playerInstance.transform.position) < minSafeDistance)
-                            continue;
-                    }
-                    return hit.position;
+                    sunLight = namedLight;
+                    return;
                 }
             }
 
-            if (NavMesh.SamplePosition(spawnCenter, out NavMeshHit fallbackHit, 30f, NavMesh.AllAreas))
+            Light[] allLights = FindObjectsByType<Light>(FindObjectsSortMode.None);
+            for (int i = 0; i < allLights.Length; i++)
             {
-                return fallbackHit.position;
+                if (allLights[i] != null && allLights[i].type == LightType.Directional)
+                {
+                    sunLight = allLights[i];
+                    return;
+                }
+            }
+        }
+
+        private void EnsureDefaultGradients()
+        {
+            if (sunColorByTime == null)
+            {
+                sunColorByTime = new Gradient();
+            }
+            if (ambientSkyColorByTime == null)
+            {
+                ambientSkyColorByTime = new Gradient();
+            }
+            if (ambientEquatorColorByTime == null)
+            {
+                ambientEquatorColorByTime = new Gradient();
+            }
+            if (ambientGroundColorByTime == null)
+            {
+                ambientGroundColorByTime = new Gradient();
             }
 
-            return spawnCenter; // Hard fallback if no NavMesh nearby
+            if (sunColorByTime.colorKeys == null || sunColorByTime.colorKeys.Length == 0)
+            {
+                sunColorByTime.SetKeys(
+                    new[]
+                    {
+                        new GradientColorKey(new Color(0.08f, 0.10f, 0.22f), 0f),
+                        new GradientColorKey(new Color(1.00f, 0.68f, 0.45f), 0.23f),
+                        new GradientColorKey(new Color(1.00f, 0.97f, 0.88f), 0.50f),
+                        new GradientColorKey(new Color(1.00f, 0.62f, 0.40f), 0.77f),
+                        new GradientColorKey(new Color(0.08f, 0.10f, 0.22f), 1f)
+                    },
+                    new[]
+                    {
+                        new GradientAlphaKey(1f, 0f),
+                        new GradientAlphaKey(1f, 1f)
+                    }
+                );
+            }
+
+            if (ambientSkyColorByTime.colorKeys == null || ambientSkyColorByTime.colorKeys.Length == 0)
+            {
+                ambientSkyColorByTime.SetKeys(
+                    new[]
+                    {
+                        new GradientColorKey(new Color(0.03f, 0.04f, 0.10f), 0f),
+                        new GradientColorKey(new Color(0.35f, 0.49f, 0.73f), 0.30f),
+                        new GradientColorKey(new Color(0.55f, 0.72f, 0.95f), 0.50f),
+                        new GradientColorKey(new Color(0.30f, 0.40f, 0.60f), 0.75f),
+                        new GradientColorKey(new Color(0.03f, 0.04f, 0.10f), 1f)
+                    },
+                    new[]
+                    {
+                        new GradientAlphaKey(1f, 0f),
+                        new GradientAlphaKey(1f, 1f)
+                    }
+                );
+            }
+
+            if (ambientEquatorColorByTime.colorKeys == null || ambientEquatorColorByTime.colorKeys.Length == 0)
+            {
+                ambientEquatorColorByTime.SetKeys(
+                    new[]
+                    {
+                        new GradientColorKey(new Color(0.02f, 0.02f, 0.05f), 0f),
+                        new GradientColorKey(new Color(0.22f, 0.22f, 0.30f), 0.30f),
+                        new GradientColorKey(new Color(0.35f, 0.35f, 0.38f), 0.50f),
+                        new GradientColorKey(new Color(0.24f, 0.20f, 0.22f), 0.75f),
+                        new GradientColorKey(new Color(0.02f, 0.02f, 0.05f), 1f)
+                    },
+                    new[]
+                    {
+                        new GradientAlphaKey(1f, 0f),
+                        new GradientAlphaKey(1f, 1f)
+                    }
+                );
+            }
+
+            if (ambientGroundColorByTime.colorKeys == null || ambientGroundColorByTime.colorKeys.Length == 0)
+            {
+                ambientGroundColorByTime.SetKeys(
+                    new[]
+                    {
+                        new GradientColorKey(new Color(0.01f, 0.01f, 0.02f), 0f),
+                        new GradientColorKey(new Color(0.09f, 0.08f, 0.08f), 0.30f),
+                        new GradientColorKey(new Color(0.18f, 0.18f, 0.16f), 0.50f),
+                        new GradientColorKey(new Color(0.10f, 0.07f, 0.07f), 0.75f),
+                        new GradientColorKey(new Color(0.01f, 0.01f, 0.02f), 1f)
+                    },
+                    new[]
+                    {
+                        new GradientAlphaKey(1f, 0f),
+                        new GradientAlphaKey(1f, 1f)
+                    }
+                );
+            }
         }
 
         private GameObject InstantiateAgentOnNavMesh(GameObject prefab, Vector3 spawnPos, Quaternion? spawnRotation = null)
