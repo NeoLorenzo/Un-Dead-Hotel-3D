@@ -15,7 +15,7 @@ NavMeshProjectSettings:
     cost: 1
   - name: Furniture
     cost: 2
-  - name: 
+  - name: Atrium
     cost: 1
   - name: 
     cost: 1
