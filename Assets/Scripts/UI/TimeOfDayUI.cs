@@ -18,14 +18,14 @@ namespace UnDeadHotel.UI
 
         private void Update()
         {
-            if (GameManager.Instance == null)
+            if (GameTimeSystem.Instance == null)
             {
                 SetPanelVisible(false);
                 return;
             }
 
             SetPanelVisible(true);
-            timeText.text = GameManager.Instance.CurrentTimeFormatted;
+            timeText.text = GameTimeSystem.Instance.CurrentTimeFormatted;
         }
 
         private void BuildUi()

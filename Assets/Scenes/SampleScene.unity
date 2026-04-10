@@ -752,6 +752,12 @@ GameObject:
   m_Component:
   - component: {fileID: 182540230}
   - component: {fileID: 182540229}
+  - component: {fileID: 182540236}
+  - component: {fileID: 182540235}
+  - component: {fileID: 182540234}
+  - component: {fileID: 182540233}
+  - component: {fileID: 182540232}
+  - component: {fileID: 182540231}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -771,11 +777,86 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d3a0391eafd2b004c9cd8b929a91b576, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.GameManager
-  perceptionCellSize: 12
-  perceptionRebuildInterval: 0.2
-  startHour: 8
-  gameSecondsPerRealSecond: 3600
-  pauseTime: 0
+  actorSpatialIndexRuntime: {fileID: 182540236}
+  gameTimeSystem: {fileID: 182540235}
+  dayNightCycleController: {fileID: 182540234}
+  populationSpawner: {fileID: 182540233}
+  infectionConversionService: {fileID: 182540232}
+  debugUIBootstrapper: {fileID: 182540231}
+--- !u!4 &182540230
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &182540231
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 015af2ca1617471b9dedc25a15d9ea44, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.DebugUIBootstrapper
+  spawnBehaviorTreeUI: 1
+  spawnTimeOfDayUI: 1
+--- !u!114 &182540232
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 01e90bcf20df426fa593b105a2c4f452, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.InfectionConversionService
+  populationSpawner: {fileID: 182540233}
+--- !u!114 &182540233
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: faa79cfac5d94464ba9324a16ec21a92, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.PopulationSpawner
+  survivorPrefab: {fileID: 882737984744219268, guid: 026dad7cc33b6f54582c8fa891e265bd, type: 3}
+  zombiePrefab: {fileID: 6160975924946950828, guid: c7e3b1443aab46d4cbd8acdf8d762c73, type: 3}
+  guestPrefab: {fileID: 882737984744219268, guid: 05d5b50a63a6172459a6e0894f6519ec, type: 3}
+  guestOccupancyRate: 0.1
+  initialZombificationRate: 0.01
+  logPopulationSummary: 1
+  logConversions: 1
+--- !u!114 &182540234
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c6f4a9a5ae354446a7e8c4d162c6dfea, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.DayNightCycleController
+  gameTimeSystem: {fileID: 182540235}
   sunLight: {fileID: 0}
   sunYaw: 170
   sunPitchOffset: -90
@@ -968,28 +1049,35 @@ MonoBehaviour:
     m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
-  survivorPrefab: {fileID: 882737984744219268, guid: 026dad7cc33b6f54582c8fa891e265bd, type: 3}
-  zombiePrefab: {fileID: 6160975924946950828, guid: c7e3b1443aab46d4cbd8acdf8d762c73, type: 3}
-  guestPrefab: {fileID: 882737984744219268, guid: 05d5b50a63a6172459a6e0894f6519ec, type: 3}
-  guestOccupancyRate: 0.1
-  initialZombificationRate: 0.01
-  logPopulationSummary: 1
-  logConversions: 1
---- !u!4 &182540230
-Transform:
+--- !u!114 &182540235
+MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 182540228}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0c40ec5283a54e97912ae85c9ba1a655, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.GameTimeSystem
+  startHour: 8
+  gameSecondsPerRealSecond: 3600
+  pauseTime: 0
+--- !u!114 &182540236
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 182540228}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 438a0370ab3a494abb33565e16c4d427, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::UnDeadHotel.World.ActorSpatialIndexRuntime
+  perceptionCellSize: 12
+  perceptionRebuildInterval: 0.2
 --- !u!1 &211270288
 GameObject:
   m_ObjectHideFlags: 0
@@ -2446,38 +2534,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &876901863
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 876901864}
-  m_Layer: 0
-  m_Name: Atrium
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &876901864
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 876901863}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children:
-  - {fileID: 1342522966}
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &888162176
 GameObject:
   m_ObjectHideFlags: 0
@@ -3291,7 +3347,7 @@ Transform:
   - {fileID: 1918013550}
   - {fileID: 1862423871}
   - {fileID: 380030236}
-  m_Father: {fileID: 876901864}
+  m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &1342522967
 MonoBehaviour:
@@ -6251,6 +6307,6 @@ SceneRoots:
   - {fileID: 330585546}
   - {fileID: 410087041}
   - {fileID: 832575519}
-  - {fileID: 876901864}
+  - {fileID: 1342522966}
   - {fileID: 5160034828065195461}
   - {fileID: 182540230}

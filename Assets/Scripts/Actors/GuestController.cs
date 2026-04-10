@@ -477,9 +477,9 @@ namespace UnDeadHotel.Actors
                 hasProcessedDeath = true;
 
                 bool killedByZombie = lastDamageSourceTeamID == 1;
-                if (killedByZombie && GameManager.Instance != null)
+                if (killedByZombie && InfectionConversionService.Instance != null)
                 {
-                    GameManager.Instance.TryConvertGuestToZombie(transform.position, transform.rotation);
+                    InfectionConversionService.Instance.TryConvertGuestToZombie(transform.position, transform.rotation);
                 }
             }
 
