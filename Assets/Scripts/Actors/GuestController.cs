@@ -25,6 +25,29 @@ namespace UnDeadHotel.Actors
         public float maxWanderWaitTime = 2.0f;
         public int wanderCandidateSamples = 8;
 
+        [Header("Flee Settings")]
+        public float fleeReplanInterval = 0.25f;
+        public float fleeNearRadius = 4f;
+        public float fleeFarRadius = 8f;
+        public int fleeAnglesPerRing = 8;
+        public float fleeProbeRadius = 2f;
+        public float fleePathCostWeight = 0.35f;
+        public float fleeOpennessWeight = 0.25f;
+        public float stuckDistanceThreshold = 0.3f;
+        public float stuckTimeThreshold = 1.0f;
+
+        private struct ThreatMemory
+        {
+            public Vector3 position;
+            public float expiresAt;
+
+            public ThreatMemory(Vector3 position, float expiresAt)
+            {
+                this.position = position;
+                this.expiresAt = expiresAt;
+            }
+        }
+
         private NavMeshAgent agent;
         private Selector rootNode;
         private Sequence fleeSequence;
@@ -40,8 +63,19 @@ namespace UnDeadHotel.Actors
         private float nextDangerScanTime;
         private bool hasVisibleThreatThisScan;
         private readonly List<BaseActor> nearbyZombies = new List<BaseActor>(16);
+        private readonly List<Vector3> visibleThreatPositions = new List<Vector3>(16);
+        private readonly List<ThreatMemory> recentThreatPositions = new List<ThreatMemory>(24);
+        private readonly List<Vector3> activeThreatPositions = new List<Vector3>(32);
         private bool hasProcessedDeath;
         private NavMeshPath wanderPath;
+        private NavMeshPath fleePath;
+        private float nextFleeReplanTime;
+        private bool forceFleeReplan;
+        private int consecutiveStuckEvents;
+        private bool useExpandedRingsForNextReplan;
+        private float fleeStuckTimer;
+        private Vector3 fleeStuckReferencePosition;
+        private bool hasFleeStuckReference;
 
         private void OnEnable()
         {
@@ -56,6 +90,7 @@ namespace UnDeadHotel.Actors
             teamID = 0; // Human
             outsideRoomComfortTimer = Mathf.Max(0f, outsideRoomComfortDuration);
             wanderPath = new NavMeshPath();
+            fleePath = new NavMeshPath();
 
             if (obstacleLayer == 0) obstacleLayer = 1 << 6; // Default to Wall if unset
 
@@ -128,6 +163,8 @@ namespace UnDeadHotel.Actors
                 nextDangerScanTime = Time.time + Mathf.Max(0.01f, dangerScanInterval);
             }
 
+            PruneExpiredThreatMemory();
+
             if (hasVisibleThreatThisScan && currentThreat != null && currentThreat.currentHealth > 0f)
             {
                 panicTimer = 0f;
@@ -142,6 +179,8 @@ namespace UnDeadHotel.Actors
             {
                 return NodeState.Success;
             }
+
+            ResetFleeState();
             return NodeState.Failure;
         }
 
@@ -175,20 +214,39 @@ namespace UnDeadHotel.Actors
 
         private NodeState ActionFlee()
         {
-            // Even if currentThreat is out of sight, panic memory triggers Flee using lastKnownThreatPosition
+            if (!IsAgentReady()) return NodeState.Running;
 
-            // Flee logic: Run in opposite direction from the last known threat position
-            Vector3 directionAwayFromThreat = (transform.position - lastKnownThreatPosition).normalized;
-            Vector3 fleePosition = transform.position + (directionAwayFromThreat * 10f); // Run 10 meters away
-
-            // Ensure the flee point is on the NavMesh
-            NavMeshHit hit;
-            if (NavMesh.SamplePosition(fleePosition, out hit, 10f, NavMesh.AllAreas))
+            agent.speed = moveSpeed * 1.5f; // Run faster when fleeing.
+            RebuildActiveThreatPositions();
+            if (activeThreatPositions.Count == 0)
             {
-                agent.SetDestination(hit.position);
-                agent.speed = moveSpeed * 1.5f; // Run faster when fleeing!
+                return NodeState.Running;
             }
 
+            UpdateFleeStuckState();
+
+            bool shouldReplan = forceFleeReplan
+                || Time.time >= nextFleeReplanTime
+                || !agent.hasPath
+                || (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance + 0.25f);
+
+            if (shouldReplan)
+            {
+                bool consumeExpandedRings = useExpandedRingsForNextReplan;
+                if (TryFindBestFleeDestination(out Vector3 bestDestination))
+                {
+                    agent.SetDestination(bestDestination);
+                    forceFleeReplan = false;
+                    nextFleeReplanTime = Time.time + Mathf.Max(0.05f, fleeReplanInterval);
+                }
+
+                if (consumeExpandedRings)
+                {
+                    useExpandedRingsForNextReplan = false;
+                }
+            }
+
+            AlignFacingToVelocity();
             return NodeState.Running;
         }
 
@@ -431,6 +489,7 @@ namespace UnDeadHotel.Actors
         private void PerformDangerScan()
         {
             hasVisibleThreatThisScan = false;
+            visibleThreatPositions.Clear();
 
             ActorSpatialIndex index = ActorSpatialIndex.Instance;
             if (index == null)
@@ -451,7 +510,11 @@ namespace UnDeadHotel.Actors
 
                 if (!CanSeeTarget(actor)) continue;
 
-                float distSqr = (actor.transform.position - transform.position).sqrMagnitude;
+                Vector3 threatPosition = actor.transform.position;
+                visibleThreatPositions.Add(threatPosition);
+                AddOrRefreshThreatMemory(threatPosition);
+
+                float distSqr = (threatPosition - transform.position).sqrMagnitude;
                 int actorId = actor.GetInstanceID();
 
                 if (distSqr < closestDistanceSqr || (Mathf.Approximately(distSqr, closestDistanceSqr) && actorId < closestId))
@@ -468,6 +531,364 @@ namespace UnDeadHotel.Actors
                 lastKnownThreatPosition = closestVisibleThreat.transform.position;
                 hasVisibleThreatThisScan = true;
             }
+            else
+            {
+                currentThreat = null;
+            }
+        }
+
+        private void PruneExpiredThreatMemory()
+        {
+            float now = Time.time;
+            for (int i = recentThreatPositions.Count - 1; i >= 0; i--)
+            {
+                if (recentThreatPositions[i].expiresAt <= now)
+                {
+                    recentThreatPositions.RemoveAt(i);
+                }
+            }
+        }
+
+        private void AddOrRefreshThreatMemory(Vector3 threatPosition)
+        {
+            float expiryTime = Time.time + Mathf.Max(0.01f, panicPersistence);
+            const float mergeDistanceSqr = 1.0f;
+
+            for (int i = 0; i < recentThreatPositions.Count; i++)
+            {
+                ThreatMemory memory = recentThreatPositions[i];
+                if ((memory.position - threatPosition).sqrMagnitude <= mergeDistanceSqr)
+                {
+                    memory.position = threatPosition;
+                    memory.expiresAt = expiryTime;
+                    recentThreatPositions[i] = memory;
+                    return;
+                }
+            }
+
+            recentThreatPositions.Add(new ThreatMemory(threatPosition, expiryTime));
+        }
+
+        private void RebuildActiveThreatPositions()
+        {
+            activeThreatPositions.Clear();
+
+            for (int i = 0; i < visibleThreatPositions.Count; i++)
+            {
+                AddUniqueThreatPosition(activeThreatPositions, visibleThreatPositions[i]);
+            }
+
+            float now = Time.time;
+            for (int i = 0; i < recentThreatPositions.Count; i++)
+            {
+                ThreatMemory memory = recentThreatPositions[i];
+                if (memory.expiresAt > now)
+                {
+                    AddUniqueThreatPosition(activeThreatPositions, memory.position);
+                }
+            }
+
+            if (activeThreatPositions.Count == 0 && panicTimer < panicPersistence && lastKnownThreatPosition != Vector3.zero)
+            {
+                activeThreatPositions.Add(lastKnownThreatPosition);
+            }
+        }
+
+        private void AddUniqueThreatPosition(List<Vector3> positions, Vector3 candidate)
+        {
+            const float duplicateDistanceSqr = 0.25f;
+            for (int i = 0; i < positions.Count; i++)
+            {
+                if ((positions[i] - candidate).sqrMagnitude <= duplicateDistanceSqr)
+                {
+                    return;
+                }
+            }
+
+            positions.Add(candidate);
+        }
+
+        private bool TryFindBestFleeDestination(out Vector3 bestDestination)
+        {
+            bestDestination = transform.position;
+            if (activeThreatPositions.Count == 0)
+            {
+                return false;
+            }
+
+            float nearRadius = Mathf.Max(0.5f, fleeNearRadius);
+            float farRadius = Mathf.Max(nearRadius + 0.5f, fleeFarRadius);
+            if (useExpandedRingsForNextReplan)
+            {
+                nearRadius = Mathf.Max(nearRadius, 6f);
+                farRadius = Mathf.Max(farRadius, 10f);
+            }
+
+            int angleCount = Mathf.Max(4, fleeAnglesPerRing);
+            float angleStep = 360f / angleCount;
+
+            bool hasBest = false;
+            float bestScore = float.MinValue;
+            float bestPathLength = float.MaxValue;
+
+            for (int ring = 0; ring < 2; ring++)
+            {
+                float radius = ring == 0 ? nearRadius : farRadius;
+                for (int i = 0; i < angleCount; i++)
+                {
+                    float radians = Mathf.Deg2Rad * (angleStep * i);
+                    Vector3 direction = new Vector3(Mathf.Cos(radians), 0f, Mathf.Sin(radians));
+                    Vector3 candidate = transform.position + (direction * radius);
+
+                    TryScoreFleeCandidate(candidate, ref hasBest, ref bestScore, ref bestPathLength, ref bestDestination);
+                }
+            }
+
+            Vector3 awayFromCentroidDirection = ComputeAwayFromThreatCentroidDirection();
+            Vector3 centroidCandidate = transform.position + (awayFromCentroidDirection * farRadius);
+            TryScoreFleeCandidate(centroidCandidate, ref hasBest, ref bestScore, ref bestPathLength, ref bestDestination);
+
+            return hasBest;
+        }
+
+        private Vector3 ComputeAwayFromThreatCentroidDirection()
+        {
+            Vector3 weightedCentroid = Vector3.zero;
+            float totalWeight = 0f;
+
+            for (int i = 0; i < activeThreatPositions.Count; i++)
+            {
+                Vector3 toThreat = activeThreatPositions[i] - transform.position;
+                float distSqr = Mathf.Max(0.25f, toThreat.sqrMagnitude);
+                float weight = 1f / distSqr;
+                weightedCentroid += activeThreatPositions[i] * weight;
+                totalWeight += weight;
+            }
+
+            if (totalWeight > 0f)
+            {
+                weightedCentroid /= totalWeight;
+            }
+            else
+            {
+                weightedCentroid = lastKnownThreatPosition;
+            }
+
+            Vector3 away = transform.position - weightedCentroid;
+            away.y = 0f;
+            if (away.sqrMagnitude <= 0.0001f)
+            {
+                away = transform.forward;
+                away.y = 0f;
+            }
+
+            if (away.sqrMagnitude <= 0.0001f)
+            {
+                away = Vector3.forward;
+            }
+
+            return away.normalized;
+        }
+
+        private void TryScoreFleeCandidate(
+            Vector3 rawCandidate,
+            ref bool hasBest,
+            ref float bestScore,
+            ref float bestPathLength,
+            ref Vector3 bestDestination)
+        {
+            NavMeshHit sampled;
+            float sampleRadius = Mathf.Max(1f, fleeProbeRadius);
+            if (!NavMesh.SamplePosition(rawCandidate, out sampled, sampleRadius, NavMesh.AllAreas))
+            {
+                return;
+            }
+
+            if (fleePath == null)
+            {
+                fleePath = new NavMeshPath();
+            }
+
+            if (!agent.CalculatePath(sampled.position, fleePath) || fleePath.status != NavMeshPathStatus.PathComplete)
+            {
+                return;
+            }
+
+            float pathLength = CalculatePathLength(fleePath);
+            float nearestThreatDistance = CalculateNearestThreatDistance(sampled.position);
+            float openness = CalculateOpenness(sampled.position);
+            float score = nearestThreatDistance - (pathLength * fleePathCostWeight) + (openness * fleeOpennessWeight);
+
+            bool isBetter = false;
+            if (!hasBest || score > bestScore + 0.0001f)
+            {
+                isBetter = true;
+            }
+            else if (Mathf.Abs(score - bestScore) <= 0.0001f && pathLength < bestPathLength - 0.0001f)
+            {
+                isBetter = true;
+            }
+            else if (Mathf.Abs(score - bestScore) <= 0.0001f && Mathf.Abs(pathLength - bestPathLength) <= 0.0001f)
+            {
+                if (sampled.position.x < bestDestination.x - 0.0001f)
+                {
+                    isBetter = true;
+                }
+                else if (Mathf.Abs(sampled.position.x - bestDestination.x) <= 0.0001f
+                    && sampled.position.z < bestDestination.z - 0.0001f)
+                {
+                    isBetter = true;
+                }
+            }
+
+            if (!isBetter)
+            {
+                return;
+            }
+
+            hasBest = true;
+            bestScore = score;
+            bestPathLength = pathLength;
+            bestDestination = sampled.position;
+        }
+
+        private float CalculatePathLength(NavMeshPath path)
+        {
+            if (path == null || path.corners == null || path.corners.Length < 2)
+            {
+                return 0f;
+            }
+
+            float length = 0f;
+            Vector3[] corners = path.corners;
+            for (int i = 1; i < corners.Length; i++)
+            {
+                length += Vector3.Distance(corners[i - 1], corners[i]);
+            }
+
+            return length;
+        }
+
+        private float CalculateNearestThreatDistance(Vector3 candidatePosition)
+        {
+            if (activeThreatPositions.Count == 0)
+            {
+                return 0f;
+            }
+
+            float nearestSqr = float.MaxValue;
+            for (int i = 0; i < activeThreatPositions.Count; i++)
+            {
+                float distSqr = (activeThreatPositions[i] - candidatePosition).sqrMagnitude;
+                if (distSqr < nearestSqr)
+                {
+                    nearestSqr = distSqr;
+                }
+            }
+
+            return Mathf.Sqrt(Mathf.Max(0f, nearestSqr));
+        }
+
+        private float CalculateOpenness(Vector3 position)
+        {
+            int openCount = 0;
+            const int probeDirections = 8;
+            float probeSampleRadius = Mathf.Max(0.5f, fleeProbeRadius * 0.5f);
+            float probeDistance = Mathf.Max(0.5f, fleeProbeRadius);
+
+            for (int i = 0; i < probeDirections; i++)
+            {
+                float radians = Mathf.Deg2Rad * ((360f / probeDirections) * i);
+                Vector3 direction = new Vector3(Mathf.Cos(radians), 0f, Mathf.Sin(radians));
+                Vector3 probePoint = position + (direction * probeDistance);
+
+                NavMeshHit hit;
+                if (NavMesh.SamplePosition(probePoint, out hit, probeSampleRadius, NavMesh.AllAreas))
+                {
+                    openCount++;
+                }
+            }
+
+            return openCount;
+        }
+
+        private void UpdateFleeStuckState()
+        {
+            if (!agent.hasPath || agent.pathPending)
+            {
+                ResetStuckTracking();
+                return;
+            }
+
+            if (!agent.pathPending && agent.remainingDistance <= agent.stoppingDistance + 0.25f)
+            {
+                ResetStuckTracking();
+                return;
+            }
+
+            Vector3 currentPosition = transform.position;
+            if (!hasFleeStuckReference)
+            {
+                fleeStuckReferencePosition = currentPosition;
+                fleeStuckTimer = 0f;
+                hasFleeStuckReference = true;
+                return;
+            }
+
+            Vector3 planarDelta = currentPosition - fleeStuckReferencePosition;
+            planarDelta.y = 0f;
+            float movedDistance = planarDelta.magnitude;
+            if (movedDistance >= Mathf.Max(0.01f, stuckDistanceThreshold))
+            {
+                fleeStuckReferencePosition = currentPosition;
+                fleeStuckTimer = 0f;
+                consecutiveStuckEvents = 0;
+                return;
+            }
+
+            fleeStuckTimer += Time.deltaTime;
+            if (fleeStuckTimer < Mathf.Max(0.1f, stuckTimeThreshold))
+            {
+                return;
+            }
+
+            forceFleeReplan = true;
+            hasFleeStuckReference = false;
+            fleeStuckTimer = 0f;
+            consecutiveStuckEvents++;
+            if (consecutiveStuckEvents >= 2)
+            {
+                useExpandedRingsForNextReplan = true;
+                consecutiveStuckEvents = 0;
+            }
+        }
+
+        private void ResetStuckTracking()
+        {
+            hasFleeStuckReference = false;
+            fleeStuckTimer = 0f;
+            consecutiveStuckEvents = 0;
+        }
+
+        private void ResetFleeState()
+        {
+            forceFleeReplan = false;
+            useExpandedRingsForNextReplan = false;
+            nextFleeReplanTime = 0f;
+            ResetStuckTracking();
+        }
+
+        private void AlignFacingToVelocity()
+        {
+            Vector3 velocity = agent.velocity;
+            velocity.y = 0f;
+            if (velocity.sqrMagnitude <= 0.04f)
+            {
+                return;
+            }
+
+            Quaternion targetRotation = Quaternion.LookRotation(velocity.normalized, Vector3.up);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, Time.deltaTime * 10f);
         }
 
         protected override void Die()
